@@ -15,11 +15,24 @@ def get_target(sheet: Path, target: str) -> pd.DataFrame:
     return df_cleaned[
         df_cleaned["Target"].iloc[:, 0].str.contains(target, case=False, regex=True)
     ]
-    # return target_df["Night", "Data quality", ]
+
+
+def get_target_list(
+    excel_file: Path, sheet_name: Optional[str] = "target_list_status"
+) -> None:
+    df = pd.read_excel(excel_file, sheet_name=sheet_name, header=[0, 1])
+    nband_selection = df["Selected"]["for LN paper"].astype(str)
+    df_filtered = df[nband_selection != "no"]
+    df_cleaned = df_filtered.dropna(subset=[("Selected", nband_selection.name)])
+    lband_selection = df_cleaned["Selected"]["for L paper"].astype(str)
+    df_final =  df_cleaned[~lband_selection.isin(["no", "tbd"])]
+    return df_final["Name"].iloc[:, 0].tolist()
 
 
 def get_dir_name(target: str) -> str:
     """Returns the directory name for a target."""
+    if " " in target:
+        return target.replace(" ", "_")
     if target.startswith("HD"):
         return target[:2] + "_" + target[2:]
 
@@ -45,7 +58,8 @@ def get_date(night: str, nights: pd.DataFrame) -> Optional[str]:
 
 def sort_target(sheet: Path, target: str, source_dir: Path, target_dir: Path) -> None:
     """Sorts the data for a target."""
-    target_dir /= target
+    dir_name = get_dir_name(target)
+    target_dir /= dir_name 
     for quality in ["bad", "medium", "good", "tba"]:
         quality_dir = target_dir / quality
         quality_dir.mkdir(parents=True, exist_ok=True)
@@ -53,20 +67,26 @@ def sort_target(sheet: Path, target: str, source_dir: Path, target_dir: Path) ->
     df = get_target(sheet, target)
     nights = df["Night"].iloc[:, 0].apply(lambda x: x.strftime("%Y-%m-%d")).to_dict()
     reversed_nights = {v: k for k, v in nights.items()}
-    for fits_file in list((source_dir / get_dir_name(target)).glob("*.fits")):
-        file_name = fits_file.name
-        key = get_date(re.search(r"\d{4}-\d{2}-\d{2}", file_name).group(), nights)
+
+    for fits_file in list((source_dir / dir_name).glob("*.fits")):
+        fits_name = fits_file.name
+        date = re.search(r"\d{4}-\d{2}-\d{2}", fits_name)
+        if date is None:
+            continue
+
+        key = get_date(date.group(), nights)
+
         if key is None:
-            shutil.copy(fits_file, target_dir / "tba" / file_name)
+            shutil.copy(fits_file, target_dir / "tba" / fits_name)
         else:
             row = df.loc[reversed_nights[key]]
             config = row["Data description"]["Tel. config."]
-            band = "L" if filter(lambda x: "L" in x, file_name.split("_")) else "N"
+            band = "L" if filter(lambda x: "L" in x, fits_name.split("_")) else "N"
 
             if band == "N" and "AT" in config:
-                shutil.copy(fits_file, target_dir / "tba" / file_name)
+                shutil.copy(fits_file, target_dir / "tba" / fits_name)
             else:
-                quality = row["Data quality"][f"{band} band"]
+                quality = str(row["Data quality"][f"{band} band"])
                 if "good" in quality:
                     quality = "good"
                 elif "so so" in quality:
@@ -76,15 +96,14 @@ def sort_target(sheet: Path, target: str, source_dir: Path, target_dir: Path) ->
                 else:
                     quality = "tba"
 
-                shutil.copy(fits_file, target_dir / quality / file_name)
+                shutil.copy(fits_file, target_dir / quality / fits_name)
 
 
 if __name__ == "__main__":
     data_dir = Path().home() / "Data"
-    exel_file = data_dir / "survey" / "MATISSE data overview.xlsx"
+    excel_file = data_dir / "survey" / "MATISSE data overview.xlsx"
     source_dir = data_dir / "reduced_data" / "jozsef_reductions" / "targets5"
     target_dir = data_dir / "survey"
 
-    targets = ["HD142527"]
-    for target in targets:
-        sort_target(exel_file, target, source_dir, target_dir)
+    for target in get_target_list(excel_file):
+        sort_target(excel_file, target, source_dir, target_dir)
